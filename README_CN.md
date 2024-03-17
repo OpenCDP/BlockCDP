@@ -2,7 +2,7 @@
 一个基于 Linux 内核的块设备 CDP (Continual Data Protection) 开源项目。
 
 ## 设计概要
-[设计概要](http://github.com/OpenCDP)
+[设计概要](https://github.com/OpenCDP/OpenCDP)
 
 ## 使用方法
 宿主机：Windows11  

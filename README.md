@@ -3,7 +3,7 @@
 BlockCDP is an open-source project for Continuous Data Protection (CDP), which based on the Linux kernel.
 
 ## Design & Arch
-[Design & Arch](http://github.com/OpenCDP)
+[Design & Arch](https://github.com/OpenCDP/OpenCDP)
 
 ## Usage
 Host：Windows11  
