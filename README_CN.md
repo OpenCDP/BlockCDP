@@ -1,5 +1,5 @@
 # BlockCDP
-一个基于 Linux 内核的块设备 CDP (Continual Data Protection) 开源项目。
+一个基于 Linux 内核的块设备 CDP (Continuous Data Protection) 开源项目。
 
 ## 设计概要
 [设计概要](https://github.com/OpenCDP/OpenCDP)
