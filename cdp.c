@@ -14,63 +14,66 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 
-#define CDP_MAJOR			240
-#define CDP_MINOR			0
-#define CDP_NAME			"cdp"
+#define CDP_MAJOR	240
+#define CDP_MINOR	0
+#define CDP_NAME	"cdp"
 
-#define TARGET_DISK_PATH	"/dev/sdb"      //host-disk
-#define FILE_PATH		    "/dev/shm"      //bio数据、元数据存放目录
-#define META_FILE_NAME      "metafile"      //元数据文件命名
-#define DATA_FILE_NAME      "datafile"      //bio数据文件命名
-#define MAX_DATA_FILE_SIZE  (1024*1024*10)  //单个bio数据文件最大容量10MB
+#define TARGET_DISK_PATH	"/dev/sdb"	//host-disk
+#define FILE_PATH		"/dev/shm"	//metafile datafile path
+#define META_FILE_NAME		"metafile"	//meta file prefix
+#define DATA_FILE_NAME		"datafile"	//data file prefix
+#define MAX_DATA_FILE_SIZE  (1024*1024*10)	//max pre data file size 10MB
 
-#define META_BUFFER_SIZE	(512)           //元数据写入文件的缓冲区公用大小512字节
+#define META_BUFFER_SIZE	(512)		//share meta buffer len
 
-#define BUFFER_COUNT_LINE	(16)            //打印16进制数组显示多少字节一行
+#define BUFFER_COUNT_LINE	(16)		//dumphex buffer line
 
-#define WRITE_BIO_COUNT_LOOP    (100)       //bio工作线程每次循环处理多少个bio数据写入
+#define WRITE_BIO_COUNT_LOOP	(100)		//flush bio count per loop
 
 static struct gendisk *cdp_disk;
 static struct request_queue *cdp_queue;
 static struct block_device *target_disk;
-struct bio_set *cdp_bio_set;                //启用bio fast clone用到的内存池，暂时没用上
-static struct file *meta_file;              //元数据文件句柄
-static struct file *data_file;              //bio数据文件句柄
-static char *meta_buffer;                   //元数据写入文件的缓冲区公用
 
-mempool_t *page_pool = NULL;                //cdp bio 的页面内存池
+struct bio_set *cdp_bio_set;                //bio fast clone, not use
+static struct file *meta_file;              //metafile fd
+static struct file *data_file;              //datafile fd
+static char *meta_buffer;                   //meta buffer
 
-//bio工作线程
+mempool_t *page_pool = NULL;                //cdp bio page pool
+
+//bio worker thread
 static struct task_struct *bio_work_thread;
-//bio任务元素
+//bio content item
 struct bio_ctx_t {
-    struct rtc_time tm;     //bio请求时间
-    //这里直接使用bio作为cdp的记录，因为需要使用内存页面记录
-    //落盘的数据，不再自己构造太多字段，直接复用bio结构作为记录
-    //包括写入的扇区号、写入的数据大小等等
-    struct bio* cdp_bio;    
+  //bio request time
+  struct rtc_time tm;
+  //reuse bio struct directly
+  struct bio* cdp_bio;    
 };
-//bio队列，记录需要写入bio数据文件的bio相关记录
+//bio list
 struct bio_list_t {
     struct list_head list;
     struct bio_ctx_t *ctx;
 };
 
-//引入内存池分配
+//mem cache pool
 struct kmem_cache *bio_ctx_cache;
 struct kmem_cache *bio_list_cache;
 mempool_t *bio_ctx_mempool;
 mempool_t *bio_list_mempool;
 
-//submit提交队列，用于记录vfs层提交的bio请求
+//submit list, store vfs bio request
 static LIST_HEAD(bio_submit_list);
-//write执行队列，bio工作线程负责从这个队列取出bio数据写入bio数据文件
+//write list, flush to disk
 static LIST_HEAD(bio_write_list);
-static unsigned int bio_submit_list_count = 0;  //当前submit队列有多少个bio请求
-static unsigned int bio_write_list_count = 0;   //当前write队列有多少个bio请求
+//current submit list bio count
+static unsigned int bio_submit_list_count = 0;  
+//current write list bio count
+static unsigned int bio_write_list_count = 0;   
 
-//spinlock_t cdp_device_lock;                     //设备锁(暂时用不上)
-spinlock_t bio_list_lock;                       //bio队列锁主要是保护submit队列
+//spinlock_t cdp_device_lock;
+//bio list lock
+spinlock_t bio_list_lock;
 
 /*
 static void print_bio_buff(unsigned char *data, int size)
@@ -93,7 +96,6 @@ static void print_bio_buff(unsigned char *data, int size)
 }
 */
 
-/* 生成当前时间戳 */
 static int gen_current_time_str(char *buff)
 {
     struct rtc_time tm;
@@ -114,7 +116,6 @@ void bio_page_free(void *element, void *pool_data)
 	__free_page(element);
 }
 
-/* 释放 cdp bio 实例及里面的的page页面，因为page页面是我们自己手动分配的，所以需要手动释放 */
 static void cdp_bio_free(struct bio *bio)
 {
     int i;
@@ -127,7 +128,6 @@ static void cdp_bio_free(struct bio *bio)
     bio_put(bio);
 }
 
-/* 创建 cdp_bio 数据结构，其实里面主要就是 bio 字段 */
 static struct bio* cdp_bio_alloc(struct bio *bio)
 {
     struct bio *cdp_bio;
@@ -137,7 +137,6 @@ static struct bio* cdp_bio_alloc(struct bio *bio)
     //unsigned int i;
     //unsigned int total_size = 0;
 
-    //创建bio结构(默认会用系统内部的 fs_bio_set 分配bio)
     cdp_bio = bio_alloc(GFP_NOIO, bio->bi_vcnt);
     if( ! cdp_bio ) {
         printk(KERN_ERR "cdp_bio_build alloc fail\n");
@@ -145,41 +144,21 @@ static struct bio* cdp_bio_alloc(struct bio *bio)
     }
 
     cdp_bio->bi_iter.bi_sector = bio->bi_iter.bi_sector;
-    //不需要设定 cdp_bio 写入大小的值，因为下面add_page之后这些值都会一样的了
-    //如果这里预先设定了，add_page之后，这个bi_size就翻倍了，vcnt也一样不用搞
-   	//cdp_bio->bi_iter.bi_size = bio->bi_iter.bi_size;
-    /*
-    for( i = 0; i < bio->bi_vcnt; i++ ) {
-        //把页面page预先置空
-        cdp_bio->bi_io_vec[i].bv_page = NULL;
-    }
-    */
 
-    //根据 vfs 提交的bio请求，1:1 地复制一份bio请求，主要是page页面
+    //copy vfs bio data
     bio_for_each_segment(bvec, bio, iter) {
         unsigned char *data = page_address(bvec.bv_page);
         unsigned int offset = bvec.bv_offset;
         unsigned int length = bvec.bv_len;
 
-        //vfs bio有多少个页面就创建多少个，然后复制数据
-        //这里是不是也需要改成GFP_NOIO方式分配page才行？
         pg = mempool_alloc(page_pool, GFP_NOIO);
         if( ! pg ) {
             printk(KERN_ERR "cdp_bio_alloc mempool_alloc fail");
             goto bio_fail;
         }
-        //暂时不复制
-        //把bio写入的数据复制一份到bio请求缓冲区，后续用来写入bio数据文件
         memcpy(page_address(pg), data + offset, length);
         bio_add_page(cdp_bio, pg, length, 0);
-        //total_size += length;
-        //printk(KERN_INFO "bio_add_page %p %d [%d]\n", data, length, total_size);
     }
-    //设置完add_page之后，cdp_bio 和 bio 下面这些字段就一致了
-    //printk(KERN_INFO "bio_alloc_1 %d %d\n", bio->bi_vcnt, cdp_bio->bi_vcnt);
-    //printk(KERN_INFO "bio_alloc_2 %ld %d\n", bio->bi_iter.bi_sector, bio->bi_iter.bi_size);
-    //printk(KERN_INFO "bio_alloc_1 %d %d\n", cdp_bio->bi_vcnt, cdp_bio->bi_vcnt);
-    //printk(KERN_INFO "bio_alloc_2 %ld %d\n", cdp_bio->bi_iter.bi_sector, cdp_bio->bi_iter.bi_size);
 
     return cdp_bio;
 
@@ -188,20 +167,16 @@ bio_fail:
     return NULL;
 }
 
-/* 生成一个write队列的bio请求记录 */
 static struct bio_ctx_t* new_bio_ctx(struct bio *bio)
 {
     struct bio_ctx_t *ctx;
     struct bio *cdp_bio;
 
-    //ctx = kmalloc(sizeof(struct bio_ctx_t), GFP_KERNEL);
     ctx = mempool_alloc(bio_ctx_mempool, GFP_NOIO);
     if( ! ctx ) {
         printk(KERN_ERR "kmalloc bio_ctx_t fail");
         return NULL;
     }
-    //记录bio请求时间、写入host盘开始扇区号、写入数据长度
-    //并创建一个data缓冲区，后续用于存放vfs bio需要写入的数据内容
     rtc_time_to_tm(get_seconds() + 8 * 60 * 60, &ctx->tm);
 
     cdp_bio = cdp_bio_alloc(bio);
@@ -214,14 +189,12 @@ static struct bio_ctx_t* new_bio_ctx(struct bio *bio)
     return ctx;
 }
 
-/* 释放bio请求记录 */
 static void free_bio_ctx(struct bio_ctx_t *ctx)
 {
     cdp_bio_free(ctx->cdp_bio);
     kfree(ctx);
 }
 
-/* 关闭元数据文件 */
 static int close_meta_file(void)
 {
     if( meta_file ) {
@@ -231,7 +204,6 @@ static int close_meta_file(void)
     return 0;
 }
 
-/* 打开元数据文件，文件命名格式：metafile.时间戳 */
 static int open_meta_file(void)
 {
     int ret;
@@ -254,7 +226,6 @@ static int open_meta_file(void)
     return 0;
 }
 
-/* 关闭bio数据文件 */
 static int close_data_file(void)
 {
     if( data_file ) {
@@ -264,7 +235,6 @@ static int close_data_file(void)
     return 0;
 }
 
-/* 打开bio数据文件，文件命名格式：datafile.时间戳 */
 static int open_data_file(void)
 {
     int ret;
@@ -305,7 +275,9 @@ static int gen_meta_log_1(unsigned int start_sector, unsigned int end_sector,
 }
 */
 
-/* 生成一个元数据字符串， 年-月-日-时-分-秒:[写入host扇区号][写入数据长度][写入数据在bio数据文件偏移] */
+/* 
+ * metalog: year-mon-day-hour-min-sec:[start_sector][data_len][data_file_pos] 
+*/
 static int gen_meta_log_2(unsigned int start_sector, unsigned int length,
                           unsigned int data_file_pos, unsigned char *buff)
 {
@@ -339,7 +311,6 @@ static int write_meta_log_1(unsigned int start_sector, unsigned int end_sector,
 }
 */
 
-/* 写入一条元数据记录 */
 static int write_meta_log_2(unsigned int start_sector, unsigned int length, 
                             int data_file_pos)
 {
@@ -357,7 +328,6 @@ static int write_meta_log_2(unsigned int start_sector, unsigned int length,
     return ret;
 }
 
-/* 检查bio数据文件是否需超过大小，重新再生成一个新的 */
 static int check_log_file(unsigned int data_size)
 {
     if( data_file->f_pos > MAX_DATA_FILE_SIZE ||
@@ -379,7 +349,6 @@ static unsigned int get_data_file_pos(void)
 }
 */
 
-/* 写入一个bio数据到bio数据文件 */
 static int write_data_file_bio(struct bio *bio)
 {
     //struct bio_vec bvec;
@@ -390,9 +359,8 @@ static int write_data_file_bio(struct bio *bio)
         return -1;
     }
 
-    //循环把bio里面的page写入bio数据文件，这里不能用
-    //bio_for_each_segment去迭代，因为我们的cdp bio是自己手动构建的，
-    //不是fastclone，有一些字段并没有复制，所以这里只能用for
+    //cdp bio make by manual not use fastclone ...
+    //so can't use bio_for_each_segment !!!
     for( i = 0; i < bio->bi_vcnt; i++ ) {
         struct page *pg;
         unsigned char *data;
@@ -437,7 +405,7 @@ static void bio_end_io_cb(struct bio *bio)
 }
 */
 
-/* 把来自于 vfs 的submit队列中的bio请求 move 到 write队列 */
+/* move vfs bio to write list */
 static int move_submit_to_write_list(void)
 {
     struct bio_list_t *bio_item, *tmp;
@@ -458,7 +426,7 @@ static int move_submit_to_write_list(void)
     return i;
 }
 
-/* 处理来自于 vfs 层的bio请求，生成对应的bio请求记录添加到 submit 队列 */
+/* handle vfs bio request, create cdp bio and push submit list */
 static int handle_request_bio(struct request_queue *q, struct bio *bio)
 {
     struct bio_list_t *bio_item;
@@ -481,7 +449,6 @@ static int handle_request_bio(struct request_queue *q, struct bio *bio)
     }
     bio_item->ctx = ctx;
 
-    //提交到 submit 队列
     spin_lock_irq(&bio_list_lock);
     list_add_tail(&bio_item->list, &bio_submit_list);
     bio_submit_list_count++;
@@ -491,8 +458,7 @@ static int handle_request_bio(struct request_queue *q, struct bio *bio)
 }
 
 /* 
-  bio工作线程，负责把 submit队列的bio请求 move 到自己的 write 队列
-  然后把这些bio请求写入bio数据文件
+  cdp bio write worker thread
 */
 static int bio_work_thread_run(void *data)
 {
@@ -506,7 +472,7 @@ static int bio_work_thread_run(void *data)
     while (!kthread_should_stop()) {
         ret = move_submit_to_write_list();
         if( ret == 0 && bio_write_list_count == 0 ) { 
-            //如果当前 submit、write 队列都为空，释放一下cpu防止空转
+            //list empty sleep for cpu idle
             ssleep(1); 
         }
         ctx = NULL;
@@ -523,9 +489,10 @@ static int bio_work_thread_run(void *data)
             bio_write_list_count--;
 
             cdp_bio = ctx->cdp_bio;
-            //准备写入数据前，看看bio文件是否超过额定大小
+            //check datafile before write data 
             data_file_pos = check_log_file(cdp_bio->bi_iter.bi_size);
-            //写入元数据，写入bio数据，这里后续需要调整一下顺序，先保证bio数据写入成功再写元数据
+            //write meta and data
+	    //write data first and write meta second ?
             ret1 = write_meta_log_2(cdp_bio->bi_iter.bi_sector, 
                                     cdp_bio->bi_iter.bi_size, 
                                     data_file_pos);
@@ -538,8 +505,7 @@ static int bio_work_thread_run(void *data)
             free_bio_ctx(ctx);
 
             if( write_bio_count >= WRITE_BIO_COUNT_LOOP ) {
-                //如果已经处理过一定数量的bio请求，那么这个时候需要跳出循环
-                //去取一下submit队列的请求，防止submit队列撑爆
+		//break for and fetch submit bio
                 break;
             }
         }

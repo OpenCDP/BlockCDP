@@ -6,8 +6,9 @@ import os
 
 metafile_timestamp_list = {}
 
-# 定义要读取的文本文件路径
+# metafile and datafile path
 cdpfile_path = "/dev/shm"
+# disk base image
 targetfile_path = "/opt/BlockCDP/base.img"
 
 def get_timestamp(ts):
@@ -111,7 +112,7 @@ if __name__ == '__main__':
 
     get_metafile_timestamp_list(metafile_start, metafile_end, \
                                 time_start, time_end)
-    #这里需要重新排序，确保按时间先后循序
+    #here needs to be reordered to ensure time order
     metafiles = metafile_timestamp_list.keys()
     metafiles = sorted(metafiles)
 
