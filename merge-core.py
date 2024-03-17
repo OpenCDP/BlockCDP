@@ -7,8 +7,8 @@ import os
 metafile_timestamp_list = {}
 
 # 定义要读取的文本文件路径
-cdpfile_path = "/opt/cdp-disk"
-targetfile_path = "/opt/cdp-disk/0.img"
+cdpfile_path = "/dev/shm"
+targetfile_path = "/opt/BlockCDP/base.img"
 
 def get_timestamp(ts):
     date_format = "%Y-%m-%d-%H-%M-%S"
@@ -86,7 +86,7 @@ if __name__ == '__main__':
 
     print sys.argv
     if len(sys.argv) != 6:
-        print('cdp.py [metafile_start] [metafile_end] [time_start] [time_end] [test|run]')
+        print('merge-core.py [metafile_start] [metafile_end] [time_start] [time_end] [test|run]')
         sys.exit(0)
 
     metafile_start = sys.argv[1]

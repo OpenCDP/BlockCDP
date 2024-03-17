@@ -11,10 +11,11 @@ for file_name in files:
         file_list.append(file_name)
 
 file_list = sorted(file_list)
-if len(file_list) <= 1:
+print file_list
+if len(file_list) <= 0:
     sys.exit(0)
 
-for metafile_name in file_list[:-1]:
+for metafile_name in file_list:
     datafile_name = metafile_name.replace('meta', 'data')
     print "python merge-core.py %s %s '' '' test"%(metafile_name, metafile_name)
 
