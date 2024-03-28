@@ -18,6 +18,8 @@
 #define CDP_MINOR	0
 #define CDP_NAME	"cdp"
 
+#define HARDSECT_SIZE       (512)
+
 #define TARGET_DISK_PATH	"/dev/sdb"	//host-disk
 #define FILE_PATH		"/dev/shm"	//metafile datafile path
 #define META_FILE_NAME		"metafile"	//meta file prefix
@@ -519,7 +521,7 @@ static int bio_work_thread_run(void *data)
 static blk_qc_t make_request(struct request_queue *q, struct bio *bio)
 {
     handle_request_bio(q, bio);
-    bio_set_dev(bio, target_disk->bd_contains);
+    bio_set_dev(bio, target_disk);
     generic_make_request(bio);
     return 0;
 }
@@ -556,6 +558,8 @@ static int __init cdp_init(void)
     	printk(KERN_ERR "cdp: Failed to get target disk\n");
 	    return PTR_ERR(target_disk);
     }
+    printk(KERN_INFO "cdp: target_disk %s size %ld\n",
+	   TARGET_DISK_PATH, target_disk->bd_part->nr_sects * HARDSECT_SIZE);
 
     cdp_queue = blk_alloc_queue(GFP_KERNEL);
     if (!cdp_queue) {
