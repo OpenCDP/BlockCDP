@@ -206,15 +206,13 @@ static int close_meta_file(void)
     return 0;
 }
 
-static int open_meta_file(void)
+static int open_meta_file(char *time_str)
 {
     int ret;
-    char time_str[100];
     char filename[100];
 
     close_meta_file();
 
-    gen_current_time_str(time_str);
     sprintf(filename, "%s/%s.%s", FILE_PATH, META_FILE_NAME, time_str);
     printk(KERN_INFO "create...%s", filename);
 
@@ -237,15 +235,13 @@ static int close_data_file(void)
     return 0;
 }
 
-static int open_data_file(void)
+static int open_data_file(char *time_str)
 {
     int ret;
-    char time_str[100];
     char filename[100];
 
     close_data_file();
 
-    gen_current_time_str(time_str);
     sprintf(filename, "%s/%s.%s", FILE_PATH, DATA_FILE_NAME, time_str);
     printk(KERN_INFO "create...%s", filename);
 
@@ -256,6 +252,21 @@ static int open_data_file(void)
         return ret;
     }
 
+    return 0;
+}
+
+static int open_cdp_file(void)
+{
+    char time_str[100];
+
+    gen_current_time_str(time_str);
+
+    if( open_meta_file(time_str) ) {
+        return -1;
+    }
+    if( open_data_file(time_str) ) {
+        return -1;
+    }
     return 0;
 }
 
@@ -338,8 +349,7 @@ static int check_log_file(unsigned int data_size)
                         meta_file->f_pos, data_file->f_pos);
         close_data_file();
         close_meta_file();
-        open_meta_file();
-        open_data_file();
+        open_cdp_file();
         return 0;
     }
     return data_file->f_pos;
@@ -589,10 +599,7 @@ static int __init cdp_init(void)
 
     add_disk(cdp_disk);
 
-    if( open_meta_file() ) {
-        goto err_release_queue;
-    }
-    if( open_data_file() ) {
+    if( open_cdp_file() ) {
         goto err_release_queue;
     }
 
