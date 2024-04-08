@@ -594,7 +594,7 @@ static int __init cdp_init(void)
     cdp_disk->fops = &cdp_fops;
     cdp_disk->private_data = target_disk;
     strcpy(cdp_disk->disk_name, CDP_NAME);
-    set_capacity(cdp_disk, get_capacity(target_disk->bd_disk));
+    set_capacity(cdp_disk, target_disk->bd_part->nr_sects);
     cdp_disk->queue = cdp_queue;
 
     add_disk(cdp_disk);
